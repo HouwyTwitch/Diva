@@ -139,7 +139,10 @@ internal port: 50000
 
 ## 5. Установка и автозапуск агента
 
-Запустите PowerShell **от имени администратора** в каталоге проекта:
+Запустите PowerShell в каталоге проекта. Если у текущего процесса нет elevated
+administrator token, установщик сам покажет стандартный UAC-запрос и продолжит
+работу в новом окне. Это также устраняет ситуацию, когда пользователь состоит в
+группе Administrators, но PowerShell работает с ограниченным UAC-токеном:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -152,6 +155,19 @@ Set-ExecutionPolicy -Scope Process Bypass
   -FPS 60 `
   -Bitrate 20000
 ```
+
+После запуска должна появиться строка `Elevated administrator token confirmed`.
+Если UAC-запрос отменить, установка остановится с понятным сообщением. Проверить
+текущий процесс вручную можно командой:
+
+```powershell
+([Security.Principal.WindowsPrincipal]::new(
+  [Security.Principal.WindowsIdentity]::GetCurrent()
+)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+```
+
+Команда должна вывести `True`. Надпись «Администратор» в свойствах учётной записи
+не гарантирует, что именно текущее окно PowerShell получило elevated token.
 
 Скрипт копирует бинарник в `%LOCALAPPDATA%\Diva`, открывает UDP 50000 и создаёт
 задачу «Diva Remote Agent», запускаемую при входе текущего пользователя. Задача
