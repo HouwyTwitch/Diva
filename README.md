@@ -118,8 +118,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 C:\ffmpeg\bin\ffmpeg.exe -hide_banner -encoders | Select-String h264
 ```
 
-Рекомендуемый порядок: `h264_nvenc` (NVIDIA), `h264_qsv` (Intel), `h264_amf`
-(AMD), затем `libx264`. Не каждый дистрибутив FFmpeg содержит все encoder'ы.
+Рекомендуется `-Encoder auto`: агент последовательно проверит `h264_amf`,
+`h264_nvenc`, `h264_qsv` и гарантированно доступный программный `libx264`.
+Явно выбранный аппаратный encoder при ошибке также автоматически переключается
+на `libx264`. Наличие имени в `ffmpeg -encoders` ещё не означает, что GPU и
+драйвер смогут его инициализировать.
 
 ## 4. Сеть Windows
 
@@ -163,7 +166,7 @@ Set-ExecutionPolicy -Scope Process Bypass
   -Room "my-gaming-pc" `
   -Token "ТОТ_ЖЕ_ТОКЕН_ИЗ_ENV" `
   -PublicIP "203.0.113.10" `
-  -Encoder "h264_nvenc" `
+  -Encoder "auto" `
   -FPS 60 `
   -Bitrate 20000
 ```
@@ -276,6 +279,38 @@ docker compose logs caddy diva --tail=200
 консоли. Проверьте encoder командой из раздела 3. Захват экрана не работает в
 Windows service Session 0, поэтому Diva намеренно использует интерактивную
 задачу при входе пользователя.
+
+Ошибка AMF вида `encoder->Init() failed with error 5` означает, что FFmpeg знает
+про `h264_amf`, но AMD runtime/GPU отклонил инициализацию. Частые причины:
+
+* компьютер не использует поддерживаемую AMD GPU или установлен старый driver;
+* виртуальный desktop шире максимального разрешения encoder (часто при нескольких
+  мониторах); задайте `-X/-Y/-Width/-Height` для одного монитора;
+* FFmpeg-сборка несовместима с установленным AMD AMF runtime;
+* захват имеет нечётную ширину/высоту — агент теперь автоматически дополняет кадр
+  до чётного размера.
+
+Начиная с текущей версии это не завершает агент: после ошибки `h264_amf` он пишет
+`trying fallback encoder libx264` и продолжает с программным H.264. Для
+получения этого исправления обязательно пересоберите бинарник, а затем повторно
+установите задачу с `-Encoder auto`:
+
+```powershell
+.\scripts\build-agent.ps1
+.\scripts\install-agent.ps1 <остальные обязательные параметры> -Encoder auto
+```
+
+Проверить AMF отдельно можно так:
+
+```powershell
+C:\ffmpeg\bin\ffmpeg.exe -f gdigrab -framerate 60 -i desktop `
+  -t 5 -an -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" `
+  -c:v h264_amf -b:v 20M -f null NUL
+```
+
+Если эта независимая команда завершается на `Init() error 5`, проблема находится
+в GPU/driver/FFmpeg, а не в WebRTC или сервере Diva. Используйте `auto` или
+`libx264` и обновите AMD Adrenalin driver.
 
 ### Картинка тормозит
 

@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory)][string]$PublicIP,
     [string]$Agent = "$PSScriptRoot\..\dist\diva-agent.exe",
     [string]$FFmpeg = "C:\ffmpeg\bin\ffmpeg.exe",
-    [ValidateSet('libx264','h264_nvenc','h264_qsv','h264_amf')][string]$Encoder = 'h264_nvenc',
+    [ValidateSet('auto','libx264','h264_nvenc','h264_qsv','h264_amf')][string]$Encoder = 'auto',
     [ValidateRange(1,240)][int]$FPS = 60,
     [ValidateRange(500,100000)][int]$Bitrate = 20000,
     [ValidateRange(1024,65535)][int]$UDPPort = 50000,

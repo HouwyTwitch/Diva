@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -51,7 +52,8 @@ func main() {
 	y := flag.Int("y", 0, "capture top coordinate")
 	width := flag.Int("width", 0, "capture width (0 means full virtual desktop)")
 	height := flag.Int("height", 0, "capture height (0 means full virtual desktop)")
-	encoder := flag.String("encoder", "libx264", "FFmpeg encoder: libx264, h264_nvenc, h264_qsv, or h264_amf")
+	encoder := flag.String("encoder", "auto", "FFmpeg encoder: auto, libx264, h264_nvenc, h264_qsv, or h264_amf")
+	encoderFallback := flag.Bool("encoder-fallback", true, "fall back to libx264 when a hardware encoder cannot start")
 	ffmpeg := flag.String("ffmpeg", "ffmpeg.exe", "FFmpeg path")
 	flag.Parse()
 	if *server == "" || *token == "" {
@@ -99,7 +101,7 @@ func main() {
 		}
 	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) { log.Printf("peer: %s", s) })
-	go capture(track, *ffmpeg, *fps, *bitrate, *encoder, *x, *y, *width, *height)
+	go capture(track, *ffmpeg, *fps, *bitrate, *encoder, *encoderFallback, *x, *y, *width, *height)
 	var pendingCandidates []webrtc.ICECandidateInit
 	for {
 		_, b, err := ws.ReadMessage()
@@ -138,12 +140,33 @@ func main() {
 	}
 }
 
-func capture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate int, encoder string, x, y, width, height int) {
+func capture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate int, requested string, fallback bool, x, y, width, height int) {
+	encoders := []string{requested}
+	if requested == "auto" {
+		encoders = []string{"h264_amf", "h264_nvenc", "h264_qsv", "libx264"}
+	} else if fallback && requested != "libx264" {
+		encoders = append(encoders, "libx264")
+	}
+	for index, encoder := range encoders {
+		log.Printf("starting FFmpeg encoder %s (attempt %d/%d)", encoder, index+1, len(encoders))
+		err := runCapture(track, ff, fps, bitrate, encoder, x, y, width, height)
+		if err == nil {
+			return
+		}
+		log.Printf("encoder %s stopped: %v", encoder, err)
+		if index+1 < len(encoders) {
+			log.Printf("trying fallback encoder %s", encoders[index+1])
+		}
+	}
+	log.Fatal("all configured H.264 encoders failed; test FFmpeg manually and update the GPU driver")
+}
+
+func runCapture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate int, encoder string, x, y, width, height int) error {
 	args := []string{"-hide_banner", "-loglevel", "warning", "-f", "gdigrab", "-framerate", fmt.Sprint(fps), "-offset_x", fmt.Sprint(x), "-offset_y", fmt.Sprint(y)}
 	if width > 0 && height > 0 {
 		args = append(args, "-video_size", fmt.Sprintf("%dx%d", width, height))
 	}
-	args = append(args, "-i", "desktop", "-an", "-c:v", encoder)
+	args = append(args, "-i", "desktop", "-an", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", encoder)
 	if encoder == "libx264" {
 		args = append(args, "-preset", "ultrafast", "-tune", "zerolatency")
 	} else if encoder == "h264_nvenc" {
@@ -153,8 +176,12 @@ func capture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate int, 
 	cmd := exec.Command(ff, args...)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.StdoutPipe()
-	must(err)
-	must(cmd.Start())
+	if err != nil {
+		return fmt.Errorf("open FFmpeg output: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start FFmpeg: %w", err)
+	}
 	r := annexb.New(out)
 	for {
 		frame, err := r.ReadAccessUnit()
@@ -162,7 +189,14 @@ func capture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate int, 
 			_ = track.WriteSample(media.Sample{Data: frame, Duration: time.Second / time.Duration(fps)})
 		}
 		if err != nil {
-			log.Fatal(err)
+			waitErr := cmd.Wait()
+			if waitErr != nil {
+				return fmt.Errorf("FFmpeg exited before producing a usable stream: %w", waitErr)
+			}
+			if err == io.EOF {
+				return fmt.Errorf("FFmpeg closed its video stream")
+			}
+			return fmt.Errorf("read H.264 stream: %w", err)
 		}
 	}
 }
