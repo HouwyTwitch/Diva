@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+      - run: go mod download
+      - run: go mod verify
+      - run: go test -mod=readonly ./...
+      - run: CGO_ENABLED=0 go build -mod=readonly ./cmd/server
+      - run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -mod=readonly -o diva-agent.exe ./cmd/agent
+      - run: docker build --tag diva:test .
