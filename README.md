@@ -139,6 +139,18 @@ internal port: 50000
 
 ## 5. Установка и автозапуск агента
 
+Сначала убедитесь, что используется актуальный installer v2:
+
+```powershell
+git pull --ff-only
+.\scripts\diagnose-windows.ps1
+```
+
+В выводе должно быть `Installer version: 2.0.0`. Если выводится
+`LEGACY/UNKNOWN`, локальная копия устарела (это особенно часто происходит при
+повторном использовании ранее скачанного ZIP). Скачайте репозиторий заново либо
+выполните `git pull --ff-only` в правильной папке.
+
 Запустите PowerShell в каталоге проекта. Если у текущего процесса нет elevated
 administrator token, установщик сам покажет стандартный UAC-запрос и продолжит
 работу в новом окне. Это также устраняет ситуацию, когда пользователь состоит в
@@ -168,6 +180,24 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Команда должна вывести `True`. Надпись «Администратор» в свойствах учётной записи
 не гарантирует, что именно текущее окно PowerShell получило elevated token.
+
+### Если по-прежнему видно старое `Run PowerShell as Administrator.`
+
+Это сообщение отсутствует в installer v2. Если ошибка указывает ровно на строку
+17 и содержит `throw 'Run PowerShell as Administrator.'`, PowerShell запускает
+старый файл, независимо от прав текущего окна. Проверьте это командами:
+
+```powershell
+Resolve-Path .\scripts\install-agent.ps1
+Select-String .\scripts\install-agent.ps1 -Pattern 'Diva-Installer-Version'
+Select-String .\scripts\install-agent.ps1 -Pattern 'Run PowerShell as Administrator'
+git status
+git pull --ff-only
+```
+
+В актуальном файле первая `Select-String` показывает `2.0.0`, а вторая ничего не
+находит. После обновления закройте старое окно PowerShell, откройте новое в
+обновлённой папке и повторите команду установки. Installer сам запросит UAC.
 
 Скрипт копирует бинарник в `%LOCALAPPDATA%\Diva`, открывает UDP 50000 и создаёт
 задачу «Diva Remote Agent», запускаемую при входе текущего пользователя. Задача

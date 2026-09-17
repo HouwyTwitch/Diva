@@ -1,4 +1,5 @@
 [CmdletBinding()]
+# Diva-Installer-Version: 2.0.0
 param(
     [Parameter(Mandatory)][string]$Server,
     [Parameter(Mandatory)][string]$Room,
@@ -14,6 +15,8 @@ param(
     [Parameter(DontShow)][switch]$Elevated
 )
 $ErrorActionPreference = 'Stop'
+$InstallerVersion = '2.0.0'
+Write-Host "Diva Agent installer v$InstallerVersion" -ForegroundColor Cyan
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
