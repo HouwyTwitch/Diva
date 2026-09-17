@@ -27,8 +27,8 @@ type peer struct {
 	send chan []byte
 }
 type room struct {
-	host    *peer
-	viewers map[*peer]bool
+	host   *peer
+	viewer *peer
 }
 
 var rooms = struct {
@@ -80,7 +80,7 @@ func serveWS(w http.ResponseWriter, r *http.Request, secret string) {
 	rooms.Lock()
 	rm := rooms.m[id]
 	if rm == nil {
-		rm = &room{viewers: map[*peer]bool{}}
+		rm = &room{}
 		rooms.m[id] = rm
 	}
 	if role == "host" {
@@ -90,8 +90,17 @@ func serveWS(w http.ResponseWriter, r *http.Request, secret string) {
 			return
 		}
 		rm.host = p
+		if rm.viewer != nil {
+			relay(rm.host, mustJSON(message{Type: "viewer-ready"}))
+		}
 	} else {
-		rm.viewers[p] = true
+		if rm.viewer != nil {
+			rooms.Unlock()
+			_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "computer is already in use"), time.Now().Add(time.Second))
+			_ = c.Close()
+			return
+		}
+		rm.viewer = p
 		relay(rm.host, mustJSON(message{Type: "viewer-ready"}))
 	}
 	rooms.Unlock()
@@ -106,9 +115,7 @@ func serveWS(w http.ResponseWriter, r *http.Request, secret string) {
 		}
 		rooms.Lock()
 		if role == "host" {
-			for v := range rm.viewers {
-				relay(v, b)
-			}
+			relay(rm.viewer, b)
 		} else {
 			relay(rm.host, b)
 		}
@@ -117,13 +124,12 @@ func serveWS(w http.ResponseWriter, r *http.Request, secret string) {
 	rooms.Lock()
 	if role == "host" {
 		rm.host = nil
-		for v := range rm.viewers {
-			relay(v, mustJSON(message{Type: "host-left"}))
-		}
+		relay(rm.viewer, mustJSON(message{Type: "host-left"}))
 	} else {
-		delete(rm.viewers, p)
+		rm.viewer = nil
+		relay(rm.host, mustJSON(message{Type: "viewer-left"}))
 	}
-	if rm.host == nil && len(rm.viewers) == 0 {
+	if rm.host == nil && rm.viewer == nil {
 		delete(rooms.m, id)
 	}
 	rooms.Unlock()

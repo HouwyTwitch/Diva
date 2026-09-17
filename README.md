@@ -1,61 +1,231 @@
-# Diva Remote
+# Diva Remote — удалённый Windows в браузере
 
-Diva is a self-hosted, browser-to-Windows remote desktop prototype. Video and
-input travel directly over WebRTC; the small server only serves the browser UI
-and exchanges SDP/ICE messages. There is no vendor cloud, account system, TURN,
-or media relay. This deliberate design is intended for a machine with a direct
-public/white IP.
+Diva — self-hosted система удалённого рабочего стола: на Windows работает
+агент, а оператору нужен только современный браузер. H.264-видео и ввод идут
+**напрямую по WebRTC/UDP** между браузером и Windows. Docker-сервер передаёт
+только служебные SDP/ICE-сообщения и раздаёт веб-интерфейс — видеопоток через
+него не проходит.
 
-> This is an MVP, not a security-audited or feature-complete Parsec replacement.
-> Do not expose plain HTTP or an unpatched Windows machine to the Internet.
+Сейчас это пригодный для личного использования MVP, а не полный клон Parsec.
+Есть захват всего виртуального рабочего стола или выбранной прямоугольной
+области/монитора, 60+ FPS, программный и аппаратный H.264, клавиатура, мышь и
+полноэкранный режим. Пока нет звука, геймпада, буфера обмена, передачи файлов,
+TURN, адаптивного битрейта и работы на заблокированном экране Windows.
 
-## What works
+## 1. Что потребуется
 
-* Low-latency H.264 desktop video through WebRTC (resolution follows the Windows
-  virtual desktop, including multiple monitors).
-* Browser keyboard, mouse, wheel, fullscreen, and reconnect status.
-* One active viewer per agent, shared-secret authentication, no database.
-* An immutable, unprivileged Docker image for the web/signalling service.
+### Сервер сигнализации
 
-Audio, clipboard, file transfer, controller forwarding, unattended service
-installation, TURN/NAT traversal, monitor switching, and adaptive bitrate are
-not implemented yet. The architecture leaves these as data-channel/media-track
-extensions.
+* Linux/VPS с Docker Engine и Docker Compose v2;
+* домен, например `remote.example.com`, с A-записью на публичный IP сервера;
+* открытые TCP 80 и TCP/UDP 443 (UDP 443 нужен Caddy для HTTP/3, не для видео).
 
-## Deploy the server
+Сервер может находиться где угодно и почти не расходует трафик. Caddy в составе
+проекта автоматически получает и обновляет TLS-сертификат. Доступ по голому IP
+не рекомендуется: публичный доверенный TLS-сертификат обычно выдаётся на домен.
 
-Create `.env` (use at least 32 random characters):
+### Управляемый Windows-компьютер
+
+* Windows 10/11 x64, Go 1.23+ для сборки и FFmpeg с H.264 encoder;
+* прямой публичный IPv4 **или** проброс одного UDP-порта с роутера;
+* незаблокированная интерактивная пользовательская сессия;
+* NVIDIA/Intel/AMD encoder желателен, но `libx264` тоже работает.
+
+Проверить внешний IPv4 можно на любом сервисе «мой IP». Если адрес WAN в
+настройках роутера отличается от внешнего адреса или принадлежит диапазонам
+`10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.168.0.0/16`, у вас CGNAT.
+В таком случае запросите белый IP у провайдера: TURN в этой версии отсутствует.
+
+## 2. Установка Docker-сервера
+
+```bash
+git clone <URL-ЭТОГО-РЕПОЗИТОРИЯ> diva
+cd diva
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Откройте `.env`, укажите домен и вставьте сгенерированную строку:
 
 ```dotenv
-DIVA_TOKEN=replace-with-output-of-openssl-rand-hex-32
+DIVA_ADDRESS=remote.example.com
+DIVA_TOKEN=64_случайных_шестнадцатеричных_символа
 ```
 
-Then run `docker compose up -d --build`. Put Caddy, nginx, or another TLS reverse
-proxy in front of port 8080. Forward WebSocket upgrades for `/ws`. Open only TCP
-443; media uses dynamically selected UDP ports directly between Windows and the
-browser, so permit inbound UDP to the Windows host and configure the browser to
-reach its public candidate. There are intentionally no public STUN servers.
+Запустите и проверьте контейнеры:
 
-## Build and run the Windows agent
+```bash
+docker compose pull
+docker compose up -d --build
+docker compose ps
+docker compose logs -f --tail=100
+```
 
-Install Go 1.23 and FFmpeg (with `libx264`), then:
+После выпуска сертификата откройте `https://remote.example.com`. Обновление:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Данные сертификата находятся в named volume `caddy_data`. Веб-приложение не
+использует БД. Для резервной копии достаточно сохранить `.env`; токен нельзя
+публиковать или коммитить.
+
+## 3. Подготовка Windows
+
+1. Установите [Go](https://go.dev/dl/) и FFmpeg. Убедитесь, что существуют
+   `go.exe` и `C:\ffmpeg\bin\ffmpeg.exe`.
+2. Скопируйте/клонируйте репозиторий на Windows.
+3. В обычном PowerShell соберите агент:
 
 ```powershell
-go build -o diva-agent.exe ./cmd/agent
-.\diva-agent.exe -server wss://remote.example.com/ws -room gaming-pc `
-  -token YOUR_SECRET -fps 60 -bitrate 12000 -ffmpeg C:\ffmpeg\bin\ffmpeg.exe
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\build-agent.ps1
 ```
 
-For NVIDIA, lower CPU usage and latency further by replacing `libx264` with
-`h264_nvenc` in `cmd/agent/main_windows.go`; Intel and AMD equivalents are
-`h264_qsv` and `h264_amf`. Encoder availability depends on the FFmpeg build.
-Visit the HTTPS server, enter the same room and token, and connect.
+4. Проверьте доступные H.264-кодировщики:
 
-## Production roadmap
+```powershell
+C:\ffmpeg\bin\ffmpeg.exe -hide_banner -encoders | Select-String h264
+```
 
-For Parsec-class results, replace GDI capture with a native Windows Desktop
-Duplication capture module, select NVENC/AMF/Quick Sync dynamically, add bitrate
-feedback and frame pacing, use relative/raw mouse input, add Opus audio, and
-offer a self-hosted coturn fallback. Code signing, privilege separation,
-per-device keys, rate limits, and an external TLS proxy are required before a
-public production launch.
+Рекомендуемый порядок: `h264_nvenc` (NVIDIA), `h264_qsv` (Intel), `h264_amf`
+(AMD), затем `libx264`. Не каждый дистрибутив FFmpeg содержит все encoder'ы.
+
+## 4. Сеть Windows
+
+По умолчанию агент слушает WebRTC на UDP 50000. Если Windows подключена прямо к
+Интернету, установочный скрипт сам добавит правило Windows Firewall. Если между
+ней и Интернетом есть роутер, создайте port forwarding:
+
+```text
+protocol: UDP
+external port: 50000
+internal IP: постоянный LAN-адрес Windows, например 192.168.1.50
+internal port: 50000
+```
+
+Параметру `PublicIP` всё равно передаётся **внешний белый IPv4 роутера**, а не
+`192.168.x.x`. Закрепите LAN-адрес компьютера через DHCP reservation.
+
+## 5. Установка и автозапуск агента
+
+Запустите PowerShell **от имени администратора** в каталоге проекта:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\install-agent.ps1 `
+  -Server "wss://remote.example.com/ws" `
+  -Room "my-gaming-pc" `
+  -Token "ТОТ_ЖЕ_ТОКЕН_ИЗ_ENV" `
+  -PublicIP "203.0.113.10" `
+  -Encoder "h264_nvenc" `
+  -FPS 60 `
+  -Bitrate 20000
+```
+
+Скрипт копирует бинарник в `%LOCALAPPDATA%\Diva`, открывает UDP 50000 и создаёт
+задачу «Diva Remote Agent», запускаемую при входе текущего пользователя. Задача
+работает с повышенными правами и перезапускается после ошибки. Проверка:
+
+```powershell
+Get-ScheduledTask -TaskName "Diva Remote Agent"
+Get-NetUDPEndpoint -LocalPort 50000
+```
+
+Для удаления:
+
+```powershell
+.\scripts\uninstall-agent.ps1
+```
+
+### Несколько мониторов
+
+Без дополнительных параметров FFmpeg передаёт весь виртуальный desktop — все
+мониторы одним широким кадром. Чтобы передавать только один монитор, задайте его
+координаты и размер. Например, для правого Full HD монитора:
+
+```powershell
+.\scripts\install-agent.ps1 <ОБЯЗАТЕЛЬНЫЕ ПАРАМЕТРЫ КАК ВЫШЕ> `
+  -X 1920 -Y 0 -Width 1920 -Height 1080
+```
+
+Для монитора слева `X` может быть отрицательным. Координаты видны в Windows:
+«Параметры → Система → Дисплей». После изменения конфигурации повторно запустите
+`install-agent.ps1`: задача будет заменена.
+
+## 6. Подключение
+
+1. Не блокируйте Windows и убедитесь, что задача агента запущена.
+2. Откройте `https://remote.example.com` в Chrome, Edge или Firefox.
+3. Введите `Room` (`my-gaming-pc`) и значение `DIVA_TOKEN`.
+4. Нажмите «Подключиться», затем кликните по видео для управления клавиатурой.
+5. Кнопка «На весь экран» включает fullscreen.
+
+Одновременно разрешён один браузерный клиент. Это исключает конфликт управления
+и ошибочную рассылку одного WebRTC offer нескольким peer connection.
+
+## 7. Настройка качества и задержки
+
+Начните с 60 FPS и 20 Мбит/с. Для 1080p обычно достаточно 10–20 Мбит/с, для
+1440p — 20–35, для 4K — 35–70. Повышение битрейта улучшает детали, но при
+переполнении upload-канала резко увеличивает задержку. Оставляйте 20–30% запаса.
+
+Для диагностики откройте `chrome://webrtc-internals` или `about:webrtc`.
+Проверяйте packet loss, jitter, RTT и выбранную candidate pair. Соединение должно
+использовать UDP и публичный адрес Windows на порту 50000.
+
+## 8. Диагностика
+
+### Сайт не открывается
+
+Проверьте DNS, firewall VPS и логи:
+
+```bash
+dig +short remote.example.com
+curl -I https://remote.example.com
+docker compose logs caddy diva --tail=200
+```
+
+### Браузер показывает `failed` / видео не появляется
+
+* убедитесь, что `PublicIP` — реальный внешний IPv4 Windows/роутера;
+* проверьте UDP port forwarding и правило Windows Firewall;
+* исключите CGNAT и корпоративную сеть, блокирующую UDP;
+* проверьте, что room и token совпадают и агент запущен после входа пользователя;
+* временно используйте `-Encoder libx264`, чтобы исключить проблему драйвера GPU.
+
+### FFmpeg завершается
+
+Запустите команду агента вручную из PowerShell: stderr FFmpeg будет виден в
+консоли. Проверьте encoder командой из раздела 3. Захват экрана не работает в
+Windows service Session 0, поэтому Diva намеренно использует интерактивную
+задачу при входе пользователя.
+
+### Картинка тормозит
+
+Снизьте `Bitrate`, затем FPS/разрешение. Используйте Ethernet вместо Wi-Fi,
+аппаратный encoder и ближайший маршрут между браузером и Windows. Docker-сервер
+на задержку видеопотока не влияет после установления peer-to-peer соединения.
+
+## 9. Безопасность и ограничения
+
+* Используйте только `https://`/`wss://` и длинный уникальный токен.
+* Не публикуйте `.env`; регулярно обновляйте ОС, Docker, браузер, FFmpeg и GPU
+  driver. Ограничьте UDP 50000 по source IP, если адрес клиента постоянный.
+* Токен является общим для сервера и всех комнат. Для нескольких недоверяющих
+  друг другу пользователей нужен отдельный deployment или будущая система
+  per-device keys.
+* WebRTC шифрует media/data DTLS-SRTP, но этот проект ещё не проходил внешний
+  security audit. Не используйте его для критической инфраструктуры.
+* Ctrl+Alt+Del, UAC secure desktop, вход до пользовательской сессии и управление
+  заблокированным экраном недоступны обычному `SendInput`/`gdigrab`.
+
+## 10. Что нужно для уровня Parsec
+
+Следующие этапы: Windows Desktop Duplication API вместо GDI, автоматический
+NVENC/AMF/QSV, frame pacing и bitrate feedback, Opus loopback audio, relative
+raw mouse, gamepad, clipboard, per-device credentials, signed installer,
+self-hosted coturn и монитор selector. Текущая версия сознательно оптимизирована
+под заданный сценарий с прямым белым IP и браузером без установки клиента.

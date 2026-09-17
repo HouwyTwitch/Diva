@@ -5,6 +5,27 @@ services:
     environment:
       DIVA_LISTEN: ":8080"
       DIVA_TOKEN: "${DIVA_TOKEN:?set DIVA_TOKEN in .env}"
-      DIVA_PUBLIC_URL: "${DIVA_PUBLIC_URL:-}"
+    expose:
+      - "8080"
+    networks: [internal]
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on: [diva]
+    environment:
+      DIVA_ADDRESS: "${DIVA_ADDRESS:?set DIVA_ADDRESS in .env}"
     ports:
-      - "8080:8080/tcp"
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [internal]
+
+networks:
+  internal:
+volumes:
+  caddy_data:
+  caddy_config:

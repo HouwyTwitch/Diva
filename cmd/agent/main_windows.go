@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -19,6 +19,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
+
+	"diva/internal/annexb"
 )
 
 type envelope struct {
@@ -34,6 +36,8 @@ type inputEvent struct {
 var user32 = syscall.NewLazyDLL("user32.dll")
 var sendInput = user32.NewProc("SendInput")
 var setCursor = user32.NewProc("SetCursorPos")
+var wsWriteMu sync.Mutex
+var captureX, captureY, captureWidth, captureHeight int
 
 func main() {
 	server := flag.String("server", "", "wss://server/ws")
@@ -41,12 +45,22 @@ func main() {
 	token := flag.String("token", "", "access token")
 	fps := flag.Int("fps", 60, "capture FPS")
 	bitrate := flag.Int("bitrate", 12000, "video kbps")
-	monitor := flag.Int("monitor", 0, "monitor index (0 is virtual desktop)")
+	publicIP := flag.String("public-ip", "", "public IPv4 address advertised to the browser")
+	udpPort := flag.Uint("udp-port", 50000, "single UDP port used by WebRTC")
+	x := flag.Int("x", 0, "capture left coordinate")
+	y := flag.Int("y", 0, "capture top coordinate")
+	width := flag.Int("width", 0, "capture width (0 means full virtual desktop)")
+	height := flag.Int("height", 0, "capture height (0 means full virtual desktop)")
+	encoder := flag.String("encoder", "libx264", "FFmpeg encoder: libx264, h264_nvenc, h264_qsv, or h264_amf")
 	ffmpeg := flag.String("ffmpeg", "ffmpeg.exe", "FFmpeg path")
 	flag.Parse()
 	if *server == "" || *token == "" {
 		flag.Usage()
 		os.Exit(2)
+	}
+	captureX, captureY, captureWidth, captureHeight = *x, *y, *width, *height
+	if captureWidth <= 0 || captureHeight <= 0 {
+		captureX, captureY, captureWidth, captureHeight = virtualScreen()
 	}
 	u, err := url.Parse(*server)
 	must(err)
@@ -58,7 +72,13 @@ func main() {
 	ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	must(err)
 	defer ws.Close()
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	var settings webrtc.SettingEngine
+	if *publicIP != "" {
+		settings.SetNAT1To1IPs([]string{*publicIP}, webrtc.ICECandidateTypeHost)
+	}
+	must(settings.SetEphemeralUDPPortRange(uint16(*udpPort), uint16(*udpPort)))
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
 	must(err)
 	defer pc.Close()
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, "video", "diva")
@@ -79,7 +99,8 @@ func main() {
 		}
 	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) { log.Printf("peer: %s", s) })
-	go capture(track, *ffmpeg, *fps, *bitrate, *monitor)
+	go capture(track, *ffmpeg, *fps, *bitrate, *encoder, *x, *y, *width, *height)
+	var pendingCandidates []webrtc.ICECandidateInit
 	for {
 		_, b, err := ws.ReadMessage()
 		if err != nil {
@@ -99,27 +120,44 @@ func main() {
 			var d webrtc.SessionDescription
 			must(json.Unmarshal(m.Payload, &d))
 			must(pc.SetRemoteDescription(d))
+			for _, candidate := range pendingCandidates {
+				must(pc.AddICECandidate(candidate))
+			}
+			pendingCandidates = nil
 		case "candidate":
 			var c webrtc.ICECandidateInit
 			must(json.Unmarshal(m.Payload, &c))
-			must(pc.AddICECandidate(c))
+			if pc.RemoteDescription() == nil {
+				pendingCandidates = append(pendingCandidates, c)
+			} else {
+				must(pc.AddICECandidate(c))
+			}
+		case "viewer-left":
+			log.Fatal("viewer disconnected; restarting the agent for a clean WebRTC session")
 		}
 	}
 }
 
-func capture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate, monitor int) {
-	// gdigrab captures the complete Windows virtual desktop; monitor cropping can be
-	// supplied by putting normal FFmpeg arguments in a wrapper script.
-	args := []string{"-hide_banner", "-loglevel", "warning", "-f", "gdigrab", "-framerate", fmt.Sprint(fps), "-i", "desktop", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-b:v", fmt.Sprintf("%dk", bitrate), "-g", fmt.Sprint(fps), "-pix_fmt", "yuv420p", "-bsf:v", "h264_metadata=aud=insert", "-f", "h264", "pipe:1"}
-	_ = monitor
+func capture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate int, encoder string, x, y, width, height int) {
+	args := []string{"-hide_banner", "-loglevel", "warning", "-f", "gdigrab", "-framerate", fmt.Sprint(fps), "-offset_x", fmt.Sprint(x), "-offset_y", fmt.Sprint(y)}
+	if width > 0 && height > 0 {
+		args = append(args, "-video_size", fmt.Sprintf("%dx%d", width, height))
+	}
+	args = append(args, "-i", "desktop", "-an", "-c:v", encoder)
+	if encoder == "libx264" {
+		args = append(args, "-preset", "ultrafast", "-tune", "zerolatency")
+	} else if encoder == "h264_nvenc" {
+		args = append(args, "-preset", "p1", "-tune", "ull", "-rc", "cbr", "-delay", "0")
+	}
+	args = append(args, "-b:v", fmt.Sprintf("%dk", bitrate), "-maxrate", fmt.Sprintf("%dk", bitrate), "-bufsize", fmt.Sprintf("%dk", bitrate/2), "-g", fmt.Sprint(fps), "-bf", "0", "-pix_fmt", "yuv420p", "-bsf:v", "h264_metadata=aud=insert", "-f", "h264", "pipe:1")
 	cmd := exec.Command(ff, args...)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.StdoutPipe()
 	must(err)
 	must(cmd.Start())
-	r := &h264Reader{r: bufio.NewReaderSize(out, 1<<20)}
+	r := annexb.New(out)
 	for {
-		frame, err := r.readAccessUnit()
+		frame, err := r.ReadAccessUnit()
 		if len(frame) > 0 {
 			_ = track.WriteSample(media.Sample{Data: frame, Duration: time.Second / time.Duration(fps)})
 		}
@@ -129,79 +167,33 @@ func capture(track *webrtc.TrackLocalStaticSample, ff string, fps, bitrate, moni
 	}
 }
 
-type h264Reader struct {
-	r                 *bufio.Reader
-	delimiterConsumed bool
-	pendingNAL        []byte
-}
-
-func (h *h264Reader) readAccessUnit() ([]byte, error) {
-	var out []byte
-	for {
-		nal, err := h.readNAL()
-		if len(nal) > 4 && (nal[4]&31) == 9 && len(out) > 0 {
-			h.pendingNAL = nal
-			return out, nil
-		}
-		out = append(out, nal...)
-		if err != nil {
-			return out, err
-		}
-	}
-}
-func (h *h264Reader) readNAL() ([]byte, error) {
-	if len(h.pendingNAL) > 0 {
-		n := h.pendingNAL
-		h.pendingNAL = nil
-		return n, nil
-	}
-	prefix := []byte{0, 0, 0, 1}
-	var out []byte
-	if h.delimiterConsumed {
-		out = append(out, prefix...)
-		h.delimiterConsumed = false
-	}
-	zeros := 0
-	for {
-		b, err := h.r.ReadByte()
-		if err != nil {
-			return out, err
-		}
-		if b == 0 {
-			zeros++
-			continue
-		}
-		if b == 1 && zeros >= 3 {
-			if len(out) > 0 {
-				h.delimiterConsumed = true
-				return out, nil
-			}
-			out = append(out, prefix...)
-			zeros = 0
-			continue
-		}
-		out = append(out, make([]byte, zeros)...)
-		zeros = 0
-		out = append(out, b)
-	}
-}
 func write(ws *websocket.Conn, t string, v any) {
 	b, _ := json.Marshal(v)
+	wsWriteMu.Lock()
+	defer wsWriteMu.Unlock()
 	_ = ws.WriteJSON(envelope{Type: t, Payload: b})
 }
 func inject(e inputEvent) {
 	if e.Type == "mousemove" {
-		w, h := screenSize()
-		setCursor.Call(uintptr(int(e.X*float64(w))), uintptr(int(e.Y*float64(h))))
+		px := captureX + int(e.X*float64(captureWidth-1))
+		py := captureY + int(e.Y*float64(captureHeight-1))
+		setCursor.Call(uintptr(px), uintptr(py))
 		return
 	}
 	if e.Type == "wheel" {
-		mouse(0x0800, uint32(int32(-e.DY*120)))
+		delta := int32(120)
+		if e.DY > 0 {
+			delta = -120
+		}
+		mouse(0x0800, uint32(delta))
 		return
 	}
 	if strings.HasPrefix(e.Type, "mouse") {
 		down := e.Type == "mousedown"
 		f := uint32(0x0002)
+		if e.Button == 1 {
+			f = 0x0020
+		}
 		if e.Button == 2 {
 			f = 0x0008
 		}
@@ -251,14 +243,26 @@ func keyboard(vk uint16, flags uint32) {
 	k.flags = flags
 	sendInput.Call(1, uintptr(unsafe.Pointer(&i)), unsafe.Sizeof(i))
 }
-func screenSize() (int, int) {
+func virtualScreen() (int, int, int, int) {
 	gx := user32.NewProc("GetSystemMetrics")
+	x, _, _ := gx.Call(76)
+	y, _, _ := gx.Call(77)
 	w, _, _ := gx.Call(78)
 	h, _, _ := gx.Call(79)
-	return int(w), int(h)
+	return int(int32(x)), int(int32(y)), int(w), int(h)
 }
 
-var keys = map[string]uint16{"Enter": 13, "Escape": 27, "Backspace": 8, "Tab": 9, "Space": 32, "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40, "Delete": 46, "ControlLeft": 17, "ControlRight": 17, "ShiftLeft": 16, "ShiftRight": 16, "AltLeft": 18, "AltRight": 18, "MetaLeft": 91, "MetaRight": 92}
+var keys = map[string]uint16{
+	"Enter": 13, "Escape": 27, "Backspace": 8, "Tab": 9, "Space": 32,
+	"PageUp": 33, "PageDown": 34, "End": 35, "Home": 36, "ArrowLeft": 37,
+	"ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40, "Insert": 45, "Delete": 46,
+	"ControlLeft": 17, "ControlRight": 17, "ShiftLeft": 16, "ShiftRight": 16,
+	"AltLeft": 18, "AltRight": 18, "MetaLeft": 91, "MetaRight": 92,
+	"CapsLock": 20, "NumLock": 144, "ScrollLock": 145, "Pause": 19,
+	"Semicolon": 186, "Equal": 187, "Comma": 188, "Minus": 189, "Period": 190,
+	"Slash": 191, "Backquote": 192, "BracketLeft": 219, "Backslash": 220,
+	"BracketRight": 221, "Quote": 222,
+}
 
 func init() {
 	for c := byte('A'); c <= 'Z'; c++ {
@@ -266,6 +270,12 @@ func init() {
 	}
 	for c := byte('0'); c <= '9'; c++ {
 		keys["Digit"+string(c)] = uint16(c)
+	}
+	for n := 1; n <= 24; n++ {
+		keys[fmt.Sprintf("F%d", n)] = uint16(111 + n)
+	}
+	for n := 0; n <= 9; n++ {
+		keys[fmt.Sprintf("Numpad%d", n)] = uint16(96 + n)
 	}
 }
 func must(err error) {
