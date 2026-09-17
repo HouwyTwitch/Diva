@@ -6,7 +6,8 @@ New-Item -ItemType Directory -Force (Split-Path $Output) | Out-Null
 Push-Location $root
 try {
     go mod download
+    go mod verify
     $env:CGO_ENABLED = '0'
-    go build -trimpath -ldflags '-s -w' -o $Output ./cmd/agent
+    go build -mod=readonly -trimpath -ldflags '-s -w' -o $Output ./cmd/agent
     Write-Host "Built $Output" -ForegroundColor Green
 } finally { Pop-Location }
