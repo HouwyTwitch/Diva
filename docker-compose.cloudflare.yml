@@ -1,0 +1,8 @@
+services:
+  caddy:
+    image: diva-caddy-cloudflare:2.10
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    environment:
+      CF_API_TOKEN: "${CF_API_TOKEN:?set CF_API_TOKEN in .env}"

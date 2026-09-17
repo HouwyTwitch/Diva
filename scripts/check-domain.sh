@@ -30,4 +30,24 @@ fi
 if [ -n "$ipv6" ]; then
   echo "WARNING: AAAA exists. Keep it only if TCP 80/443 work over IPv6." >&2
 fi
+if command -v curl >/dev/null 2>&1; then
+  http_failed=0
+  headers="$(curl -sSIL --max-time 8 "http://$domain" 2>/dev/null || true)"
+  if printf '%s\n' "$headers" | grep -Eqi '^(server: cloudflare|cf-ray:)'; then
+    echo "WARNING: Cloudflare proxy is enabled (orange cloud)." >&2
+    echo "Use DNS only, or configure the DNS-01 Compose mode from docs/domain-setup.md." >&2
+  fi
+  status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {code=$2} END {print code}')"
+  [ -z "$status" ] || echo "HTTP status: $status"
+  case "$status" in
+    522|523|524|525|526)
+      echo "WARNING: Cloudflare cannot reach or validate the origin (HTTP $status)." >&2
+      echo "Check origin TCP 80/443, SSL mode, or switch the record to DNS only." >&2
+      http_failed=1
+      ;;
+  esac
+  if [ "$http_failed" -eq 1 ]; then
+    exit 1
+  fi
+fi
 echo "DNS preflight passed. Also verify TCP ports 80 and 443 from outside the server."

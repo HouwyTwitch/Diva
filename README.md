@@ -30,6 +30,12 @@ TURN, адаптивного битрейта и работы на заблок�
 > точные A/AAAA/CNAME/CAA записи, настройка Cloudflare, firewall, команды проверки
 > и разбор ошибок ACME/Let's Encrypt.
 
+Если в логе одновременно видны Cloudflare IP `2606:4700:...`, HTTP status `522`
+и ошибка `Cannot negotiate ALPN protocol "acme-tls/1"`, запись включена в режим
+Cloudflare Proxy, но Cloudflare не может подключиться к origin. Самое быстрое
+исправление — переключить запись `remote` в **DNS only**. Если proxy необходимо
+оставить, используйте описанный в DNS-гайде режим DNS-01 с API token.
+
 ### Управляемый Windows-компьютер
 
 * Windows 10/11 x64, Go 1.23+ для сборки и FFmpeg с H.264 encoder;

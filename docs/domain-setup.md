@@ -90,6 +90,71 @@ Cloudflare). Так A-запись отвечает реальным IP VPS, а 
 
 При диагностике временно верните `DNS only`, чтобы исключить влияние прокси.
 
+### Ошибки Cloudflare `522` и `acme-tls/1`
+
+Комбинация сообщений:
+
+```text
+2606:4700:... Invalid response ...: 522
+Cannot negotiate ALPN protocol "acme-tls/1"
+```
+
+однозначно показывает, что Let's Encrypt приходит к Cloudflare, а не напрямую к
+Caddy. `522` означает, что Cloudflare не установил соединение с origin по HTTP;
+TLS-ALPN challenge через обычный Cloudflare proxy также не доходит до Caddy.
+
+Есть два поддерживаемых решения. Выберите только одно.
+
+#### Вариант A — DNS only (рекомендуется и проще)
+
+1. В Cloudflare → DNS найдите запись `remote`.
+2. Нажмите оранжевое облако, чтобы статус стал **DNS only** / серое облако.
+3. Убедитесь, что Content записи — публичный IPv4 VPS.
+4. Удалите `AAAA`, если на origin нет рабочего IPv6.
+5. Разрешите входящие TCP 80 и 443 в firewall VPS и панели хостинга.
+6. Дождитесь, пока `dig remote.houwy.dev A +short` вернёт IP VPS, а не адреса
+   Cloudflare, затем выполните:
+
+```bash
+docker compose restart caddy
+docker compose logs -f caddy
+```
+
+#### Вариант B — Cloudflare proxy + DNS-01
+
+DNS-01 не требует, чтобы центр сертификации подключался к origin по HTTP или
+договаривался об `acme-tls/1`: Caddy временно создаёт TXT-запись через Cloudflare
+API. В репозитории имеется отдельная конфигурация для этого режима.
+
+1. Cloudflare → My Profile → API Tokens → Create Token.
+2. Создайте scoped token со следующими разрешениями:
+   * `Zone / Zone / Read`;
+   * `Zone / DNS / Edit`;
+   * Zone Resources → Include → Specific zone → ваш домен.
+3. Не используйте Global API Key. Не вставляйте token в Caddyfile или Git.
+4. Добавьте в `.env`:
+
+```dotenv
+CADDYFILE_PATH=./Caddyfile.cloudflare
+CF_API_TOKEN=<секретный scoped token Cloudflare>
+```
+
+5. Запустите Compose с override, который собирает Caddy с официальным DNS
+   provider module:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml logs -f caddy
+```
+
+6. После выпуска сертификата удалять token нельзя: он понадобится Caddy для
+   автоматического продления. Защитите `.env` командой `chmod 600 .env`.
+
+В этом режиме запись может оставаться оранжевой. Cloudflare всё равно должен
+достигать origin по TCP 443 для обычного пользовательского трафика. Разрешите
+Cloudflare IP ranges в firewall либо временно откройте 443 для всех. WebSocket
+должен быть включён, SSL/TLS mode — `Full (strict)`.
+
 ## Firewall, NAT и port forwarding сервера
 
 Разрешите на VPS и во внешнем firewall/security group:
@@ -209,6 +274,9 @@ docker compose up -d --force-recreate
 | `no valid A records found` | A отсутствует или содержит приватный IP | указать публичный IPv4 VPS |
 | `connection refused` | порт закрыт или контейнер не запущен | открыть 80/443, проверить `docker compose ps` |
 | `i/o timeout` | firewall/NAT/security group блокирует challenge | разрешить и пробросить TCP 80/443 |
+| Cloudflare `522` | proxy не достигает origin | DNS only либо исправить origin firewall/routing |
+| Cloudflare `525/526` | proxy не может установить/проверить TLS до origin | сначала DNS only и выпустить origin certificate, затем Full (strict) |
+| `Cannot negotiate ALPN protocol "acme-tls/1"` | TLS-ALPN остановился на proxy | DNS only либо режим Cloudflare DNS-01 |
 | ошибка только по IPv6 | неправильная AAAA/IPv6 routing | исправить IPv6 или удалить AAAA |
 | `CAA record does not allow` | CAA запрещает issuer | разрешить `letsencrypt.org` или удалить CAA |
 | сертификат есть, но `/ws` не работает | внешний proxy не пропускает WebSocket | включить WebSocket и режим Full (strict) |
