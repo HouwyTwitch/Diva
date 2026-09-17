@@ -1,0 +1,10 @@
+services:
+  diva:
+    build: .
+    restart: unless-stopped
+    environment:
+      DIVA_LISTEN: ":8080"
+      DIVA_TOKEN: "${DIVA_TOKEN:?set DIVA_TOKEN in .env}"
+      DIVA_PUBLIC_URL: "${DIVA_PUBLIC_URL:-}"
+    ports:
+      - "8080:8080/tcp"
