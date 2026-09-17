@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory)][string]$Room,
     [Parameter(Mandatory)][string]$Token,
     [Parameter(Mandatory)][string]$PublicIP,
+    [string]$STUN = 'stun:stun.cloudflare.com:3478',
     [string]$Agent = "$PSScriptRoot\..\dist\diva-agent.exe",
     [string]$FFmpeg = "C:\ffmpeg\bin\ffmpeg.exe",
     [ValidateSet('auto','libx264','h264_nvenc','h264_qsv','h264_amf')][string]$Encoder = 'auto',
@@ -41,7 +42,7 @@ if (-not (Test-IsAdministrator)) {
     # the RunAs verb so the user gets the standard UAC consent dialog.
     $shell = (Get-Process -Id $PID).Path
     $values = [ordered]@{
-        Server = $Server; Room = $Room; Token = $Token; PublicIP = $PublicIP
+        Server = $Server; Room = $Room; Token = $Token; PublicIP = $PublicIP; STUN = $STUN
         Agent = [IO.Path]::GetFullPath($Agent); FFmpeg = [IO.Path]::GetFullPath($FFmpeg)
         Encoder = $Encoder; FPS = $FPS; Bitrate = $Bitrate; UDPPort = $UDPPort
         X = $X; Y = $Y; Width = $Width; Height = $Height
@@ -67,7 +68,7 @@ $dir = Join-Path $env:LOCALAPPDATA 'Diva'
 New-Item -ItemType Directory -Force $dir | Out-Null
 Copy-Item $Agent "$dir\diva-agent.exe" -Force
 $escapedToken = $Token.Replace('"','\"')
-$arguments = @('-server', "`"$Server`"", '-room', "`"$Room`"", '-token', "`"$escapedToken`"", '-public-ip', $PublicIP, '-udp-port', $UDPPort, '-ffmpeg', "`"$FFmpeg`"", '-encoder', $Encoder, '-fps', $FPS, '-bitrate', $Bitrate, '-x', $X, '-y', $Y, '-width', $Width, '-height', $Height) -join ' '
+$arguments = @('-server', "`"$Server`"", '-room', "`"$Room`"", '-token', "`"$escapedToken`"", '-public-ip', $PublicIP, '-stun', "`"$STUN`"", '-udp-port', $UDPPort, '-ffmpeg', "`"$FFmpeg`"", '-encoder', $Encoder, '-fps', $FPS, '-bitrate', $Bitrate, '-x', $X, '-y', $Y, '-width', $Width, '-height', $Height) -join ' '
 $action = New-ScheduledTaskAction -Execute "$dir\diva-agent.exe" -Argument $arguments
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest

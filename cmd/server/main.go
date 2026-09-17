@@ -56,6 +56,10 @@ func main() {
 	}
 	mux.Handle("/", http.FileServer(http.FS(webRoot)))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("/config.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"stunUrl": getenv("DIVA_STUN_URL", "stun:stun.cloudflare.com:3478")})
+	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) { serveWS(w, r, token) })
 	s := &http.Server{Addr: getenv("DIVA_LISTEN", ":8080"), Handler: security(mux), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("Diva listening on %s", s.Addr)

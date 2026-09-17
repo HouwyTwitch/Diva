@@ -140,6 +140,11 @@ internal port: 50000
 Параметру `PublicIP` всё равно передаётся **внешний белый IPv4 роутера**, а не
 `192.168.x.x`. Закрепите LAN-адрес компьютера через DHCP reservation.
 
+Diva также использует STUN `stun.cloudflare.com:3478` на агенте и в браузере.
+STUN не принимает видеопоток и не является relay: он только сообщает peer'ам
+видимый NAT-адрес. Его можно отключить пустым `-STUN ""` и пустым
+`DIVA_STUN_URL`, но для компьютера за роутером это не рекомендуется.
+
 ## 5. Установка и автозапуск агента
 
 Сначала убедитесь, что используется актуальный installer v2:
@@ -272,6 +277,39 @@ docker compose logs caddy diva --tail=200
 * исключите CGNAT и корпоративную сеть, блокирующую UDP;
 * проверьте, что room и token совпадают и агент запущен после входа пользователя;
 * временно используйте `-Encoder libx264`, чтобы исключить проблему драйвера GPU.
+
+Состояние `peer: failed` через примерно 30 секунд означает **ICE/UDP**, а не
+ошибку FFmpeg: encoder уже работает, но браузер и агент не нашли доступный
+сетевой маршрут. В новой версии агент печатает все local/remote ICE candidates и
+отдельное состояние `ICE`. Выполните на Windows во время работы агента:
+
+```powershell
+Get-NetUDPEndpoint -LocalPort 50000
+Get-NetFirewallRule -DisplayName "Diva WebRTC UDP" |
+  Format-List Enabled,Direction,Action,Profile
+(Invoke-RestMethod https://api.ipify.org)
+```
+
+Последняя команда должна совпасть с `-public-ip`. Если Windows находится за
+роутером, одного белого IP недостаточно: пробросьте **UDP 50000** на LAN IPv4
+этого компьютера и закрепите его DHCP reservation. Не создавайте TCP forwarding
+50000. В CGNAT входящий port forwarding невозможен — нужен белый IP провайдера.
+
+После пересборки запускайте с STUN явно, чтобы исключить старый бинарник:
+
+```powershell
+.\scripts\build-agent.ps1
+.\dist\diva-agent.exe `
+  -server "wss://remote.houwy.dev/ws" -room "main-pc" -token "TOKEN" `
+  -public-ip "37.113.250.197" -udp-port 50000 `
+  -stun "stun:stun.cloudflare.com:3478" -encoder auto `
+  -ffmpeg "C:\ffmpeg\bin\ffmpeg.exe"
+```
+
+В логе должен появиться хотя бы один `local ICE candidate` с публичным адресом и
+портом. Если видны только `host` candidates с `192.168.*`, `10.*` или `172.16-31.*`,
+не сработали `-public-ip`/STUN. Если публичный candidate есть, но ICE всё равно
+переходит в `failed`, почти всегда неверен UDP forwarding или firewall.
 
 ### FFmpeg завершается
 

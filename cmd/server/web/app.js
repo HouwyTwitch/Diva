@@ -4,9 +4,10 @@ $('#start').onclick=connect; $('#fullscreen').onclick=()=>video.requestFullscree
 async function connect(){
  const room=$('#room').value.trim(), token=$('#token').value; if(!room||!token)return;
  localStorage.setItem('diva-room',room); status.textContent='Подключение…';
+ const config=await fetch('/config.json',{cache:'no-store'}).then(r=>r.json()).catch(()=>({stunUrl:''}));
  ws=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws?role=viewer&room=${encodeURIComponent(room)}&token=${encodeURIComponent(token)}`);
- pc=new RTCPeerConnection({iceServers:[]}); pc.ontrack=e=>video.srcObject=e.streams[0]; pc.onicecandidate=e=>e.candidate&&send('candidate',e.candidate); pc.onconnectionstatechange=()=>{status.textContent=pc.connectionState; if(pc.connectionState==='connected')panel.hidden=true};
- const candidates=[]; ws.onmessage=async e=>{const m=JSON.parse(e.data); if(m.type==='offer'){await pc.setRemoteDescription(m.payload); for(const c of candidates)await pc.addIceCandidate(c); candidates.length=0; const a=await pc.createAnswer(); await pc.setLocalDescription(a); send('answer',a)}else if(m.type==='candidate'){if(pc.remoteDescription)await pc.addIceCandidate(m.payload);else candidates.push(m.payload)}else if(m.type==='host-left')location.reload()};
+ pc=new RTCPeerConnection({iceServers:config.stunUrl?[{urls:config.stunUrl}]:[]}); pc.ontrack=e=>video.srcObject=e.streams[0]; pc.onicecandidate=e=>e.candidate&&send('candidate',e.candidate); pc.onconnectionstatechange=()=>{status.textContent=pc.connectionState; if(pc.connectionState==='connected')panel.hidden=true;if(pc.connectionState==='failed'){panel.hidden=false;status.textContent='ICE failed';panel.querySelector('p').textContent='Не удалось установить UDP-соединение. Проверьте проброс UDP 50000, Windows Firewall, PublicIP и CGNAT.'}};
+ const candidates=[]; ws.onmessage=async e=>{const m=JSON.parse(e.data); try{if(m.type==='offer'){await pc.setRemoteDescription(m.payload); for(const c of candidates)await pc.addIceCandidate(c); candidates.length=0; const a=await pc.createAnswer(); await pc.setLocalDescription(a); send('answer',a)}else if(m.type==='candidate'){if(pc.remoteDescription)await pc.addIceCandidate(m.payload);else candidates.push(m.payload)}else if(m.type==='host-left')location.reload()}catch(err){console.error('signaling',err);status.textContent='Ошибка WebRTC'}};
  pc.ondatachannel=e=>{dc=e.channel; installInput()}; ws.onerror=()=>status.textContent='Ошибка соединения';
 }
 function send(type,payload){ws.send(JSON.stringify({type,payload}))}

@@ -47,6 +47,7 @@ func main() {
 	fps := flag.Int("fps", 60, "capture FPS")
 	bitrate := flag.Int("bitrate", 12000, "video kbps")
 	publicIP := flag.String("public-ip", "", "public IPv4 address advertised to the browser")
+	stunURL := flag.String("stun", "stun:stun.cloudflare.com:3478", "STUN URL used for NAT discovery (empty disables STUN)")
 	udpPort := flag.Uint("udp-port", 50000, "single UDP port used by WebRTC")
 	x := flag.Int("x", 0, "capture left coordinate")
 	y := flag.Int("y", 0, "capture top coordinate")
@@ -80,7 +81,11 @@ func main() {
 	}
 	must(settings.SetEphemeralUDPPortRange(uint16(*udpPort), uint16(*udpPort)))
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
-	pc, err := api.NewPeerConnection(webrtc.Configuration{})
+	configuration := webrtc.Configuration{}
+	if *stunURL != "" {
+		configuration.ICEServers = []webrtc.ICEServer{{URLs: []string{*stunURL}}}
+	}
+	pc, err := api.NewPeerConnection(configuration)
 	must(err)
 	defer pc.Close()
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, "video", "diva")
@@ -97,7 +102,14 @@ func main() {
 	})
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c != nil {
+			log.Printf("local ICE candidate: type=%s protocol=%s address=%s port=%d", c.Typ, c.Protocol, c.Address, c.Port)
 			write(ws, "candidate", c.ToJSON())
+		}
+	})
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		log.Printf("ICE: %s", s)
+		if s == webrtc.ICEConnectionStateFailed {
+			log.Printf("ICE failed: verify UDP %d forwarding/firewall and that public-ip=%s is the Windows/router public IPv4", *udpPort, *publicIP)
 		}
 	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) { log.Printf("peer: %s", s) })
@@ -129,6 +141,7 @@ func main() {
 		case "candidate":
 			var c webrtc.ICECandidateInit
 			must(json.Unmarshal(m.Payload, &c))
+			log.Printf("remote ICE candidate received: %s", c.Candidate)
 			if pc.RemoteDescription() == nil {
 				pendingCandidates = append(pendingCandidates, c)
 			} else {

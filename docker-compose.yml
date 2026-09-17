@@ -5,6 +5,7 @@ services:
     environment:
       DIVA_LISTEN: ":8080"
       DIVA_TOKEN: "${DIVA_TOKEN:?set DIVA_TOKEN in .env}"
+      DIVA_STUN_URL: "${DIVA_STUN_URL:-stun:stun.cloudflare.com:3478}"
     expose:
       - "8080"
     networks: [internal]
